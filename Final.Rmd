@@ -1,0 +1,181 @@
+---
+title: "WhatsApp Analyzer"
+author: "Cesar and Peter"
+date: "2023-01-09"
+output:
+  html_document:
+    toc: TRUE
+    theme: yeti
+    toc_collapse: TRUE
+    toc_float: TRUE
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+library(plotly)
+library(shiny)
+library(hilbertSimilarity)
+library(forcats)
+load("FinalModelData.RData")
+```
+
+## Background
+Whatsapp is the most famous messaging app platform in Latin America and Europe. Due to the nature of online conversations, people have a lot of flexibility regarding when they are going to respond. The myriad of tools WhatsApp offers include text, audio, image, video, documents, video calls, audio calls, and stickers which also allows for countless different ways to respond. 
+
+Over the last two decades, humankind has seen enormous advancements in technology, which lead each one of us to be able to have access to more information than any of our ancestors would have ever imagined. However, it's also true that there has never been a time where more data had been gathered from each one of us, and used  either by big corporations or the government in several ways - not always in our favor. We think this is a great opportunity to own our data and see what conclusions we can come up with. Given this inspiration, we decided to create this project in an attempt to analyze the response rate and time we respond to each other. 
+
+Previous analysis has been done by Lucas Rodés-Guirao with randomly generated data for a group chat of four individuals. The analysis included various helpful plots and graphs we wish to implement in our project, including the density plot of number of texts, which could be particularly useful to visualize the periods and the duration in which we don’t text back, or end the conversation. Another example is a response matrix of the individuals in the group chat. We are hopeful that by the end of the project, we will have been able to use the models to be able to predict the response time for each other. We hypothesize, however, that we will not be able to get results about the importance the sender has on the response time. We hope that this model can also be generalized to conversations with other people, and we could potentially look at expanding our code to give results for group chats as well.
+
+## Data-Driven Questions
+How accurately can we predict when the next action will happen in a conversation?
+
+## Data
+The data set we will be using is the chat downloaded from WhatsApp between Cesar and Peter. While we had to convert it from text into a data frame, we could gather the time and the date the messages were sent, the messages themselves, the sender and the type of message. Unfortunately, the way calls are represented in the data are limited and we were unable to gather anything more than the missed calls. An important disclosure is that we will not be releasing the data due to privacy reasons, as the data includes our conversations.
+
+## Explaning Important Concepts
+- Density Function
+A probability density function shows the probability of an event occurring for an individual x-value. In this case, it shows the we see the probability of responding to a message varies over time and is bimodal.
+- Bursts
+In order to analyze conversations, we divided the texts into bursts. People often send several texts at a time, and we considered all of them being sent as a single action.
+
+<br>
+<center>
+
+![sample burst](burst_example.jpeg){width=30%}
+
+</center>
+
+- Exponential Moving Average
+The exponential moving average (EMA) is a measure of trend over time which puts a heavier emphasis on more recent events. We thought the moving average of time difference among previous bursts sent, number of texts in a burst and number of words in a burst could be predictive for when the next text will be sent.
+
+- TF IDF
+The more frequent a word appears in a cluster relative to the entire conversation, the higher the tf-idf value. Computing the tf-idf involves finding words that are commonly, but not too frequently used in a text. The tf portion is unbiased against words in lengthy documents, which is a useful measure in our conversations.
+
+## Explanatory Data Analysis
+
+We wish to look at several different plots to better understand the key variables when trying tackle the problem.
+
+```{r echo=FALSE}
+plot_types 
+```
+This bar plot shows the counts of the types of messages sent.
+
+
+```{r echo = FALSE}
+double_text_plot %>% layout(xaxis = list(title="time since first text - first text in burst"),
+                            yaxis = list(title="time since first text - last text in burst"),
+                            title = "Double Text Analysis Plot") 
+```
+The x axis from the plot is the time since the first text until the first text in a burst. 
+The y axis is the time since the first text until the last text in a burst.
+```{r echo = FALSE}
+time_diffs_and_density
+```
+
+The x axis from the plot above is the time since our first text message.
+There plot shows two graphs superposed:
+- the time until the next action is taken, is shown as a scatterplot
+- The density plot of the frequency of the messages sent 
+The y axis values are normalized.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE, results='hide'}
+tf_idf_plot
+```
+
+The above bar graphs contain the tf-idf of all the words used in the four different conversations, which we divided using the kernel density estimation. We can see that the first conversation was mainly about going out for a Halloween party, the second conversation was a discussion about game theory, the third conversation was about the world cup, and the fourth conversation was about random topics.
+
+```{r echo = FALSE}
+scatterRender <- function(dataSet, variable){
+  #Create a scatter plot with ggplot
+  return(
+    ggplot(dataSet,aes(x = date, y = variable)) + 
+      geom_point(aes(colour = factor(name)), size = 2) + 
+      geom_line(aes(colour = factor(name))) +
+      scale_x_date(date_labels="%b %y",date_breaks  ="2 month")
+  )
+}
+alldates_people <- function(df){
+  # create df with all dates in the range of the conversation
+  alldates <- data.frame(
+      date=seq(min(df$date),max(df$date),by="days")
+      )
+  # select every name that shows up at least once. 
+  # important for groups
+  allpeople <- data.frame(name = unique(df$name))
+  #add an input for each person at least once for every day
+  alldates <- merge(alldates, allpeople)
+  return(alldates)
+}
+shiny_app
+
+```
+
+## Method
+
+Our first problem was how to divide our texts into different conversations. We wanted to do this in a deterministic way so it could be easily applied to other chats and for it to only take into consideration the time dimension.
+
+We used the time information we had already gotten and converted it into millions of seconds since the first text was sent. Then we used Kernel Density Estimation to differentiate different conversations. This method works by breaking the conversation on the local minima of a probability density function, as follows:
+```{r echo=FALSE}
+plot(cluster_selection, main="Chat PDF Local Minima", xlab="Seconds since first text")
+abline(v=cluster_selection$x[localMinima(cluster_selection$y)])
+```
+We clustered bursts according to the time of their initial text.
+
+Then we developed five random forest models, gradually adding complexity to them.
+
+First Model: Bare
+- Burst
+- Cluster 
+- Name 
+- Number of messages in the cluster 
+- Number of words in the cluster
+
+Second Model: Feature Engineering
+- Added exponential moving averages of the time differential between bursts of the previous 5 rows
+- Added exponential moving averages of number of words in the the current burst and the previous 4
+- Added exponential moving averages of number of messages in the the current burst and the previous 4
+
+Third Model: Added TF IDF
+- Created a relevance score of the burst using TF IDF
+- Added the TD IDF score of each word on the burst for the first 180 words
+
+Fourth Model: Added Sentiment Analysis
+- Added sentiment analysis to SECOND MODEL
+- Created a sentiment score of the burst using the bing lexicon
+- The bing dictionary has about 5 thousand words and it states if they have a generally positive sentiment or generally bad sentiment
+- Added all sentiment values in each burst
+
+Fifth Model: NLP
+- Added relevance score and sentiment score
+
+## Results
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+rmse_results_table
+importance_results_plot
+
+```
+
+## Conclusion
+
+We found that the most accurate predictor of time to respond was feature engineering, which we found rather interesting, considering that we initially thought sentiment analysis or the tf-idf would be the best predictor at time to respond. However, tf-idf and sentiment analysis had very close RMSE values to that of feature engineering. We found that the least useful model in predicting time was average time to answer, which was likely influenced by outliers when we had not messaged each other for a while.
+
+## Limitations 
+
+First of all, we initially texted exclusively on iMessage but then merged over to Whatsapp, which did not give us all our texts ever sent. Furthermore, Instagram direct messages, in-person dialogue, and phone calls were not factored into our dataset. Thus, only looking at Whatsapp messages might not be the most sufficient method when trying to analyze when we would reach out to each other next. Another limitation in our study was predicting the next burst, rather than the next person responding. The way we defined bursts in the project was the grouping of consecutive text messages from an individual without interruption from the other. This affects our results because it answers the question “When will the next message be sent?” rather than “When will the recipient of a text respond to a text message?”. 
+
+## Future Work
+
+As for future work and revisiting this project in the future, we wish to look at different methods and research questions. First of all, we would like to use pretrained neural networks like GPT or Bert to predict what is the next thing this person might say. This addition would help answer other questions, such as predicting the number of texts one will respond with, whether one will use emojis or special characters, or even the desirability for one to respond right away. 
+
+We would also like to replace all our internet slang and emojis for actual words that would work better with our NLP. We tried to do that, but there were no good available packages in R
+
+
+
+## Sources 
+https://bookdown.org/Maxine/tidy-text-mining/tidy-text-format.html
+https://www.investopedia.com/terms/m/movingaverage.asp
+https://cran.r-project.org/web/packages/lexicon/lexicon.pdf
+https://kb.narrative.io/what-is-unix-time
+https://www.webwise.ie/parents/explainer-whatsapp/
+https://towardsdatascience.com/analyzing-whatsapp-chats-with-python-20d62ce7fe2d
+https://towardsdatascience.com/the-romantic-side-of-data-science-analyzing-a-relationship-through-a-year-worth-of-text-messages-be7e32d81fa9

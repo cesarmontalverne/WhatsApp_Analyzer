@@ -1,0 +1,499 @@
+---
+title: "FinalModel"
+author: "cesar and peter"
+date: "2023-01-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(randomForest)
+library(tidyverse)
+library(rpart)
+library(caret)
+library(TTR)
+library(tidytext)
+library(lexicon)
+library(textclean)
+library(plotly)
+#hash_emoticons
+```
+
+```{r}
+load("workdata.RData")
+
+```
+```{r}
+mtry_tune <- 3
+num <- 3
+
+```
+```{r echo=FALSE, results=FALSE}
+set.seed(22)
+bare_data <- clean_data[,!names(clean_data) %in% c("burst_text", "next_action")]
+part_index <- createDataPartition(bare_data$target,
+                                           times=1,
+                                           p = 0.80,
+                                           groups=1,
+                                           list=FALSE)
+
+bare_train <- bare_data[part_index,1:ncol(bare_data)]
+bare_test <- bare_data[-part_index,1:ncol(bare_data)]
+
+
+# Calculate the initial mtry level
+
+mytry_tune <- function(x){
+  xx <- dim(x)[2]-1
+  return(sqrt(xx))
+}
+
+mytry_tune(clean_data)
+```
+```{r}
+set.seed(22)
+bare_RF = randomForest(target~., bare_train, ntree = 500,
+                            mtry = mtry_tune,            
+                            replace = TRUE,      
+                            sampsize = 100,      
+                            nodesize = 5,        
+                            importance = TRUE,   
+                            proximity = FALSE,    
+                            norm.votes = TRUE,   
+                            keep.forest = TRUE,  
+                            keep.inbag = TRUE)   
+
+bare_importance <- as.data.frame(bare_RF$importance)
+bare_importance <- bare_importance %>% mutate("%IncMSE"=round((`%IncMSE`),6))
+
+bare_importance <- bare_importance[order(bare_importance[,"%IncMSE"], decreasing =TRUE),]
+```
+
+```{r echo=FALSE}
+bare_predict = predict(bare_RF,newdata=bare_data)
+
+bare_rmse <- sqrt(mean((bare_predict-bare_data$target)^2))
+
+bare_rmse2 <-sqrt(mean((mean(bare_data$target)-bare_data$target)^2))
+```
+```{r}
+bare_rmse
+bare_rmse2
+```
+## Adding Basic information: hour of the day, year, month, day of the week. Also changing numbers to exponential moving average
+```{r}
+
+basic <- clean_data
+basic <- basic %>% mutate(init_weekday = weekdays(as.POSIXlt(init_unix, origin = "1970-01-01")),
+                  end_weekday = weekdays(as.POSIXlt(end_unix, origin = "1970-01-01")),
+                  init_month = months(as.POSIXlt(init_unix, origin = "1970-01-01")),
+                  end_month = months(as.POSIXlt(end_unix, origin = "1970-01-01")),
+                  init_year = as.POSIXlt(init_unix, origin = "1970-01-01")$year,
+                  end_year = as.POSIXlt(end_unix, origin = "1970-01-01")$year,
+                  init_hour = as.POSIXlt(init_unix, origin = "1970-01-01")$hour,
+                  end_hour = as.POSIXlt(end_unix, origin = "1970-01-01")$hour)
+
+myEMA<- EMA(basic$target, n=num)
+basic$target_ema <- c(0, myEMA[-nrow(basic)])
+#basic[1:num,]$target_ema <- 0
+basic$num_words_ema <- EMA(basic$num_words, n=num)
+basic$num_messages_ema <- EMA(basic$num_messages, n=num)
+#basic[1:(num-1),names(basic) %in% c("num_words_ema", "num_messages_ema")] <- 0
+basic <- basic[complete.cases(basic),]
+```
+```{r echo=FALSE, results=FALSE}
+set.seed(22)
+second_data <- basic[,!names(basic) %in% c("burst_text", "next_action", "num_words", "num_messages", "init_unix", "end_unix")]
+part_index <- createDataPartition(second_data$target,
+                                           times=1,
+                                           p = 0.80,
+                                           groups=1,
+                                           list=FALSE)
+
+second_train <- second_data[part_index,1:ncol(second_data)]
+second_test <- second_data[-part_index,1:ncol(second_data)]
+
+
+# Calculate the initial mtry level
+
+mytry_tune <- function(x){
+  xx <- dim(x)[2]-1
+  return(sqrt(xx))
+}
+
+mytry_tune(clean_data)
+```
+```{r}
+set.seed(22)
+second_RF = randomForest(target~., second_train, ntree = 500,
+                            mtry = mtry_tune,            
+                            replace = TRUE,      
+                            sampsize = 100,      
+                            nodesize = 5,        
+                            importance = TRUE,   
+                            proximity = FALSE,    
+                            norm.votes = TRUE,   
+                            keep.forest = TRUE,  
+                            keep.inbag = TRUE)   
+
+second_importance <- as.data.frame(second_RF$importance)
+second_importance <- second_importance %>% mutate("%IncMSE"=round((`%IncMSE`),6))
+
+second_importance <- second_importance[order(second_importance[,"%IncMSE"], decreasing =TRUE),]
+```
+
+```{r echo=FALSE}
+second_predict = predict(second_RF,newdata=second_data)
+
+second_rmse <- sqrt(mean((second_predict-second_data$target)^2))
+
+second_rmse2 <-sqrt(mean((mean(second_data$target)-second_data$target)^2))
+```
+```{r}
+round(second_rmse)
+second_rmse2
+```
+# Adding NLP
+
+## Adding TF_IDF
+```{r}
+text_words <- basic %>% ungroup() %>%
+  unnest_tokens(word, burst_text)
+
+tf_idf_df <- text_words %>% count(burst, word, sort = TRUE)
+total_words <- tf_idf_df %>% 
+  group_by(burst) %>% 
+  summarize(total = sum(n))
+tf_idf_df <- left_join(tf_idf_df, total_words, by="burst")
+text_tf_idf <- tf_idf_df %>%
+  bind_tf_idf(word, burst, n)
+text_tf_idf <- text_tf_idf %>%
+  select(-c(total,n,tf,idf, burst)) %>%
+  arrange(desc(tf_idf))
+
+tf_idf_final <- text_words %>% 
+  merge(text_tf_idf[1:round(10*log(nrow(text_words))),], by="word", all.x=TRUE) %>%
+  mutate(tf_idf = ifelse(is.na(tf_idf),0,tf_idf)) %>%
+  group_by(burst) %>% mutate(tf_idf_score = sum(tf_idf))%>%
+  select(-c(word,tf_idf)) %>% distinct()
+```
+```{r echo=FALSE, results=FALSE}
+set.seed(22)
+third_data <- tf_idf_final[,!names(tf_idf_final) %in% c("burst_text", "next_action", "num_words", "num_messages")]
+part_index <- createDataPartition(third_data$target,
+                                           times=1,
+                                           p = 0.80,
+                                           groups=1,
+                                           list=FALSE)
+
+third_train <- third_data[part_index,1:ncol(third_data)]
+third_test <- third_data[-part_index,1:ncol(third_data)]
+
+
+# Calculate the initial mtry level
+
+mytry_tune <- function(x){
+  xx <- dim(x)[2]-1
+  return(sqrt(xx))
+}
+
+mytry_tune(clean_data)
+```
+```{r}
+set.seed(22)
+third_RF = randomForest(target~., third_train, ntree = 500,
+                            mtry = mtry_tune,            
+                            replace = TRUE,      
+                            sampsize = 100,      
+                            nodesize = 5,        
+                            importance = TRUE,   
+                            proximity = FALSE,    
+                            norm.votes = TRUE,   
+                            keep.forest = TRUE,  
+                            keep.inbag = TRUE)   
+
+third_importance <- as.data.frame(third_RF$importance)
+third_importance <- third_importance %>% mutate("%IncMSE"=round((`%IncMSE`),6))
+
+third_importance <- third_importance[order(third_importance[,"%IncMSE"], decreasing =TRUE),]
+```
+
+```{r echo=FALSE}
+third_predict = predict(third_RF,newdata=third_data)
+
+third_rmse <- sqrt(mean((third_predict-third_data$target)^2))
+
+third_rmse2 <-sqrt(mean((mean(third_data$target)-third_data$target)^2))
+```
+```{r}
+third_rmse
+third_rmse2
+```
+
+## Adding Sentiment Analysis
+
+```{r}
+bing <- get_sentiments("bing")
+sentiment_analysis <- text_words %>% 
+  merge(bing, by="word", all.x=TRUE) %>%
+  mutate(sentiment = case_when(sentiment=="positive" ~ 1,
+                               sentiment=="negative" ~ -1,
+                               TRUE ~ 0)) %>%
+  group_by(burst) %>% mutate(sent_score = sum(sentiment))%>% select(-c(word, sentiment)) %>% distinct()
+
+nlp_final <- sentiment_analysis %>% select(c("burst", "cluster", "sent_score")) %>% merge(tf_idf_final, by = c("burst", "cluster"))
+```
+
+## Just Sentiment Analysis
+
+```{r echo=FALSE, results=FALSE}
+set.seed(22)
+fourth_data <- sentiment_analysis[,!names(sentiment_analysis) %in% c("burst_text", "next_action", "num_words", "num_messages")]
+part_index <- createDataPartition(fourth_data$target,
+                                           times=1,
+                                           p = 0.80,
+                                           groups=1,
+                                           list=FALSE)
+
+fourth_train <- fourth_data[part_index,1:ncol(fourth_data)]
+fourth_test <- fourth_data[-part_index,1:ncol(fourth_data)]
+
+
+# Calculate the initial mtry level
+
+mytry_tune <- function(x){
+  xx <- dim(x)[2]-1
+  return(sqrt(xx))
+}
+
+mytry_tune(clean_data)
+```
+```{r}
+set.seed(22)
+fourth_RF = randomForest(target~., fourth_train, ntree = 500,
+                            mtry = mtry_tune,            
+                            replace = TRUE,      
+                            sampsize = 100,      
+                            nodesize = 5,        
+                            importance = TRUE,   
+                            proximity = FALSE,    
+                            norm.votes = TRUE,   
+                            keep.forest = TRUE,  
+                            keep.inbag = TRUE)   
+
+fourth_importance <- as.data.frame(fourth_RF$importance)
+fourth_importance <- fourth_importance %>% mutate("%IncMSE"=round((`%IncMSE`),6))
+
+fourth_importance <- fourth_importance[order(fourth_importance[,"%IncMSE"], decreasing =TRUE),]
+```
+
+```{r echo=FALSE}
+fourth_predict = predict(fourth_RF,newdata=fourth_data)
+
+fourth_rmse <- sqrt(mean((fourth_predict-fourth_data$target)^2))
+
+fourth_rmse2 <-sqrt(mean((mean(fourth_data$target)-fourth_data$target)^2))
+```
+```{r}
+fourth_rmse
+fourth_rmse2
+```
+
+## Both TF_IDF and Sentiment Analysis
+```{r echo=FALSE, results=FALSE}
+set.seed(22)
+fifth_data <- nlp_final[,!names(nlp_final) %in% c("burst_text", "next_action", "num_words", "num_messages")]
+part_index <- createDataPartition(fifth_data$target,
+                                           times=1,
+                                           p = 0.80,
+                                           groups=1,
+                                           list=FALSE)
+
+fifth_train <- fifth_data[part_index,1:ncol(fifth_data)]
+fifth_test <- fifth_data[-part_index,1:ncol(fifth_data)]
+
+
+# Calculate the initial mtry level
+
+mytry_tune <- function(x){
+  xx <- dim(x)[2]-1
+  return(sqrt(xx))
+}
+
+mytry_tune(clean_data)
+```
+```{r}
+set.seed(22)
+fifth_RF = randomForest(target~., fifth_train, ntree = 500,
+                            mtry = mtry_tune,            
+                            replace = TRUE,      
+                            sampsize = 100,      
+                            nodesize = 5,        
+                            importance = TRUE,   
+                            proximity = FALSE,    
+                            norm.votes = TRUE,   
+                            keep.forest = TRUE,  
+                            keep.inbag = TRUE)   
+
+fifth_importance <- as.data.frame(fifth_RF$importance)
+fifth_importance <- fifth_importance %>% mutate("%IncMSE"=round((`%IncMSE`),6))
+
+fifth_importance <- fifth_importance[order(fifth_importance[,"%IncMSE"], decreasing =TRUE),]
+```
+
+```{r echo=FALSE}
+fifth_predict = predict(fifth_RF,newdata=fifth_data)
+
+fifth_rmse <- sqrt(mean((fifth_predict-fifth_data$target)^2))
+
+fifth_rmse2 <-sqrt(mean((mean(fifth_data$target)-fifth_data$target)^2))
+```
+```{r}
+fifth_rmse
+fifth_rmse2
+```
+```{r}
+library(plotly)
+normalize <- function(x){
+ (x - min(x)) / (max(x) - min(x))
+}
+bare_data_min <- min(bare_data$init_unix)
+bare_data_plot <- bare_data %>% mutate(init_unix = init_unix - bare_data_min,
+                                       end_unix = end_unix - bare_data_min)
+
+
+
+double_text_plot <- plot_ly(data = bare_data_plot, x = ~init_unix, y = ~end_unix, color = ~name)
+```
+
+```{r}
+
+edit_chat_bursts <- chat_bursts %>% mutate(unix_time=unix_time-bare_data_min)
+```
+```{r}
+cluster_selection <- density(edit_chat_bursts$unix_time)
+```
+```{r}
+cluster_selection_plot
+```
+```{r}
+
+
+fit <- data.frame(x=density(edit_chat_bursts$unix_time)$x, y = density(edit_chat_bursts$unix_time)$y)
+bare_data_plot[,c(8)] <- sapply(bare_data_plot[,c(8)], normalize)
+fit_min <- min(fit$y)
+fit_max <- max(fit$y)
+fit <- fit %>% mutate(y = (y-fit_min)/(fit_max-fit_min))
+
+time_diffs_and_density <-  plot_ly()
+
+time_diffs_and_density <- add_trace(
+   time_diffs_and_density,
+   mode = "lines",
+   fill = "tozeroy",
+   x = fit$x,
+   y = fit$y,
+   name = "Density"
+)
+
+time_diffs_and_density <- add_trace(
+   time_diffs_and_density,
+   type = 'scatter',
+   x = bare_data_plot$init_unix,
+   y = bare_data_plot$target,
+   color = bare_data_plot$name
+)
+
+```
+```{r}
+rmse_results <- data.frame(models = c("average","bare", "feature engineering", "tf idf", "sentiment analysis", "NLP"), 
+                           description = c("average time to answer",
+                                           "burst, cluster, name, num messages, num words",
+                                           "added exponential moving averages",
+                                           "added tf idf to feature engineering model",
+                                           "added sentiment analysis to feature engineering model",
+                                           "added tf idf+sentiment analysis to feature engineering model"),
+                           rmse =c(bare_rmse2,bare_rmse,second_rmse,third_rmse,fourth_rmse,fifth_rmse))
+rmse_results_table <- knitr::kable(rmse_results, caption="rmse results",padding = 10)
+```
+```{r}
+importance_results <- data.frame(model = c(rep("bare", each=5),
+                                           rep("feature engineering", each=5),
+                                           rep("tf idf", each=5),
+                                           rep("sentiment analysis", each=5),
+                                           rep("NLP", each=5)), 
+                                 variable = c(bare_importance[1:5,]%>% rownames(),
+                                              second_importance[1:5,]%>% rownames(),
+                                              third_importance[1:5,]%>% rownames(),
+                                              fourth_importance[1:5,]%>% rownames(),
+                                              fifth_importance[1:5,]%>% rownames()),
+                                 value = c(bare_importance[1:5,]["%IncMSE"]), 
+                                              second_importance[1:5,]["%IncMSE"],
+                                              third_importance[1:5,]["%IncMSE"],
+                                              fourth_importance[1:5,]["%IncMSE"],
+                                              fifth_importance[1:5,]["%IncMSE"])
+importance_results_plot <- plot_ly(importance_results, x = ~model, y = ~X.IncMSE, color = ~variable,type = 'bar') %>%
+  layout(showlegend = TRUE, title = "Five most Important Features in Each Model")
+```
+```{r}
+chat_unix <- function(df){
+  return(
+    df %>% 
+  dplyr::mutate(
+    unix_time = unix_convert(date,hour, minute, second),
+    text = iconv(text, "UTF-8", "latin1")
+  )%>%
+  dplyr::mutate(
+    unix_time = (unix_time-min(unix_time))/1000000
+  )
+  )
+}
+unix_convert <- function(date, hour, minute, second){
+  return(as.numeric(as.POSIXct(date, format="%Y-%m-%d")) +3600*hour+60*minute+second)
+}
+
+with_unix <- chat_unix(chatdf)
+den <- density(with_unix$unix_time)
+minima <- localMinima(den$y)
+breaks <- den$x[minima]
+with_docs <- with_unix %>% mutate(doc = case_when(unix_time<breaks[2]~1,
+                                              unix_time<breaks[3]~2,
+                                              unix_time<breaks[4]~3,
+                                              unix_time<breaks[5]~4,
+                                              TRUE ~ 5))
+
+text_words <- with_docs %>% unnest_tokens(word, text) %>% count(doc, word, sort = TRUE)
+total_words <- text_words %>% 
+  group_by(doc) %>% 
+  summarize(total = sum(n))
+text_words <- left_join(text_words, total_words, by="doc")
+ 
+text_tf_idf <- text_words %>%
+  bind_tf_idf(word, doc, n)
+text_tf_idf %>%
+  select(-total) %>%
+  arrange(desc(tf_idf))
+```
+
+```{r}
+
+tf_idf_plot <- text_tf_idf %>%
+  group_by(doc) %>%
+  slice_max(tf_idf, n = 15) %>%
+  ungroup() %>%
+  ggplot(aes(tf_idf, fct_reorder(word, tf_idf), fill = doc)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~doc, ncol = 4, scales = "free") +
+  labs(x = "tf-idf", y = NULL, title = "Most Important Words in each conversation")
+tf_idf_plot
+```
+```{r}
+save(rmse_results_table,
+     importance_results_plot,
+     tf_idf_plot,
+     plot_types, time_diffs_and_density, shiny_app, wordCount,
+     double_text_plot, cluster_selection,
+     file = "finalModelData.RData")
+```
+
+

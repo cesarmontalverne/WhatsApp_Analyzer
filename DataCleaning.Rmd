@@ -1,0 +1,336 @@
+---
+title: "FinalModel"
+author: "cesar and peter"
+date: "2023-01-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(readtext)
+library(hilbertSimilarity)
+library(shiny)
+```
+## Cleaning
+```{r}
+file <- paste(getwd(),"WhatsApp Chat - Peter","_chat.txt",sep="/")
+unix_convert <- function(date, hour, minute, second){
+  return(as.numeric(as.POSIXct(date, format="%Y-%m-%d")) +3600*hour+60*minute+second)
+}
+timestart <- function(ch){ #get index of the first character for time
+  return(regexpr(".*?\\]",ch))
+}
+timeend <- function(ch){ #get index of the last character for time
+  return(attr(regexpr(".*?\\]",ch), "match.length")+timestart(ch))
+}
+#use regex to extract name ou of the conversation
+nameend <- function(no_time_chat){
+  return(attr(regexpr("^.*?:",no_time_chat), "match.length"))
+}
+cleandf <- function(f){
+  text <- readtext(f)
+  chat <- as.data.frame(matrix(
+    str_split(text$text, "[\\r\\n\\t\\u200E][\\[]")[[1]][-1], ncol=1, byrow=TRUE)
+    )
+  ret_df <- chat %>% 
+    mutate(.keep = "none", 
+           time = sub(",","",substr(V1, timestart(V1), timeend(V1)-2)),
+           rest = substr(V1, timeend(V1), nchar(V1))) %>% 
+    mutate(.keep=c("unused"), 
+           name = substr(rest, 1, nameend(rest)-1), 
+           text = substr(rest,nameend(rest)+2,nchar(rest))) %>% 
+    separate(time,c("m/d/y","h:m:s","afternoon"), sep = " ") %>%
+    separate("m/d/y", c("month","day","year"),"/") %>%
+    separate("h:m:s", c("hour", "minute", "second"), ":") %>%
+    mutate(day = strtoi(day,10),
+           month = strtoi(month,10),
+           year = strtoi(year,10),
+           hour = strtoi(hour,10),
+           minute = strtoi(minute,10),
+           second = strtoi(second,10))%>% 
+    mutate(
+      date = as.Date(
+            paste(paste(20,year,sep=""),month,day,sep="-"),"%Y-%m-%d"
+            )
+      ) 
+    # use regex to determine type of the action recorded by the text input
+  stick_regex<-"[<][a][t][t][a][c][h][e][d][:].*[\\.][w][e][b][p][>]"
+  photo_regex<-"[<][a][t][t][a][c][h][e][d][:].*[\\.][j][p][g][>]"
+  docs_regex<-"[<][a][t][t][a][c][h][e][d][:].*[\\.][p][d][f][>]"
+  cont_regex<-"[<][a][t][t][a][c][h][e][d][:].*[\\.][v][c][f][>]"
+  ret_df$type <- case_when(
+      ret_df$text=="‎This message was deleted." ~ "deleted",
+      ret_df$text=="‎Missed video call" ~ "missedVideoCall",
+      ret_df$text=="‎Missed audio call" ~ "missedAudioCall",
+      -1!=attr(regexpr(stick_regex,ret_df$text),"match.length") ~ "sticker",
+      -1!=attr(regexpr(photo_regex,ret_df$text),"match.length") ~ "image",
+      ret_df$text=="‎image omitted" ~ "image",
+      -1!=attr(regexpr(docs_regex,ret_df$text),"match.length") ~ "doc",
+      -1!=attr(regexpr(cont_regex,ret_df$text),"match.length") ~ "contact",
+      TRUE ~ "text"
+    )
+  ret_df$type <- as.factor(ret_df$type)
+                 
+  #chatdf<-drop_na(chatdf) #drop nulls - there shouldn't be many
+  #convert time into 24 hours
+  ret_df$hour <- as.integer(ret_df$hour + 
+                              case_when(
+                                ret_df$afternoon=="PM" & ret_df$hour==12 ~ 0,
+                                ret_df$afternoon=="PM" & ret_df$hour!=12 ~ 12,
+                                ret_df$afternoon=="AM" & ret_df$hour==12 ~ -12,
+                                ret_df$afternoon=="AM" & ret_df$hour!=12 ~ 0
+                                )
+                           )
+  
+  #ret_df <- ret_df[complete.cases(ret_df), ]
+  ret_df <-  ret_df%>% mutate(unix_time=unix_convert(date,hour, minute, second))
+  #min_unix <- min(ret_df$unix_time)
+  #ret_df <- ret_df %>% mutate(unix_time = (unix_time - min_unix)/1000000)
+  return(ret_df)
+}
+chatdf <- cleandf(file)
+```
+```{r}
+bursts <- function(df){
+  df$init <- 0
+  # create column that indicates the last text of a burst ends
+  df1 <- df %>% mutate(last_before_burst_ends = ifelse(name!=lead(name), lead(init)+1, lead(init)))
+  # the cell in the last row and column last_before_burst_ends  will be NA
+  # so let's substitute that for 0 - indicating no one sent a text after that
+  df1[nrow(df1),]$last_before_burst_ends <- 0
+  # create a column that indicates the first text in a burst
+  df2 <- df1 %>% mutate(first_in_burst = ifelse(lag(last_before_burst_ends)==1, 1, 0))
+  # the cell in the first row and column first_in_burst will be NA
+  # so let's substitute that for 1 - indicating it's the start of a burst
+  df2[1,]$first_in_burst <- 1
+  # create a cumulative sum that ends up creating a unique burst id 
+  df_ret <- df2 %>% mutate(burst = cumsum(first_in_burst))
+  return(df_ret %>% select(-c(first_in_burst,last_before_burst_ends, init)))
+}
+chat_bursts <- bursts(chatdf)
+```
+```{r}
+clustering <- function(df){
+  # get local minima of the pdf
+  den <- density(df$unix_time)
+  minima <- localMinima(den$y)
+  df$cluster <- 0
+  breaks <- den$x[minima]
+  # for each local minima break
+    # if local minima break is greater than the actual time sent, do nothing
+    # otherwise, add 1 to cluster
+  for(loc_min_break in breaks){
+    df <- df%>%mutate(cluster = cluster + ifelse(loc_min_break>unix_time,0,1))
+  }
+  return(df)
+}
+chat_cluster <- clustering(chat_bursts)
+```
+```{r}
+clean_data<- chat_cluster %>% group_by(burst, cluster, name) %>%
+  summarise(burst_text = paste0(text, collapse = " "),
+         init_unix = min(unix_time),
+         end_unix = max(unix_time),
+         num_messages = n(),
+         num_words = lengths(gregexpr("\\W+", burst_text)) + 1
+         )
+
+clean_data$next_action <- c(clean_data$init_unix[-1], NA)
+clean_data <- clean_data[1:nrow(clean_data)-1,]
+clean_data <- clean_data %>% mutate(target = next_action - end_unix)
+
+```
+## Graphics
+```{r echo=FALSE}
+count_types <- chatdf %>% group_by(type)%>%summarize(count = n())
+plot_types <- plot_ly(count_types, x = ~type, y=~count, type="bar", name="peter")
+```
+
+
+```{r include=FALSE}
+alldates_people <- function(df){
+  # create df with all dates in the range of the conversation
+  alldates <- data.frame(
+      date=seq(min(df$date),max(df$date),by="days")
+      )
+  # select every name that shows up at least once. 
+  # important for groups
+  allpeople <- data.frame(name = unique(df$name))
+  #add an input for each person at least once for every day
+  alldates <- merge(alldates, allpeople)
+  return(alldates)
+}
+
+wordCounter <- function(df){
+  # create df to get count of words sent each hour
+  temp_df <- df %>% 
+      mutate(text_word_count = str_count(text,"\\w+")) %>% 
+      group_by(date, hour, name)%>% 
+      dplyr::summarise(text_count = n(), word_count = sum(text_word_count))
+  merged_df <- merge(alldates_people(df), temp_df, all.x = TRUE)
+  merged_df$hour[is.na(merged_df$hour)]<- as.integer(-1)
+  merged_df$text_count[is.na(merged_df$text_count)]<- as.numeric(0)
+  merged_df$word_count[is.na(merged_df$word_count)]<- as.numeric(0)
+  return(merged_df)
+}
+wordCount <- wordCounter(chatdf)
+
+scatterRender <- function(dataSet, variable){
+  #Create a scatter plot with ggplot
+  return(
+    ggplot(dataSet,aes(x = date, y = variable)) + 
+      geom_point(aes(colour = factor(name)), size = 2) + 
+      geom_line(aes(colour = factor(name))) +
+      scale_x_date(date_labels="%b %y",date_breaks  ="2 month")
+  )
+}
+
+```
+
+```{r include=FALSE}
+#use shiny to create interactive plots on the previously prepared dataframes
+ui <- shinyUI(fluidPage(
+
+  # Application title
+  titlePanel("texts sent"),
+
+  # Sidebar with a slider input for the number of bins
+  sidebarLayout(
+    sidebarPanel(
+      sliderInput("Dates","Dates:",
+                  min = min(wordCount$date),
+                  max = max(wordCount$date),
+                  value= c(min(wordCount$date),
+                           max(wordCount$date))
+      ),
+       sliderInput("Hours",label = "Hours:",min = 0,max=24,value=c(0,24)),
+      checkboxGroupInput(
+        "weekday",
+        "Select Weekdays:",
+        choices = c("Sunday", "Monday","Tuesday","Wednesday",
+                    "Thursday","Friday", "Saturday"),
+        selected = c("Sunday", "Monday","Tuesday","Wednesday",
+                    "Thursday","Friday", "Saturday"),
+        inline = FALSE
+      ),
+      radioButtons(
+        "alldays",
+        "Show All Days:",
+        choices = c("Hide days with no texts" = -2,"Show All Days" = -1),
+        inline = FALSE,
+        #width = NULL,
+        #choiceNames = NULL,
+        #choiceValues = NULL
+        )
+    ),
+    
+    mainPanel(
+      tabsetPanel(
+        tabPanel("Plot", plotOutput("textCount_plot")),
+        tabPanel("Boxplot",plotOutput("textCount_boxplot")),
+        tabPanel("Table",tableOutput("textCount_table")),
+        tabPanel("WordCount Plot", plotOutput("wordCount_plot")),
+        tabPanel("WordCount Boxplot",plotOutput("wordCount_boxplot")),
+        tabPanel("WordCount Table",tableOutput("wordCount_table")),
+        )
+  )),
+  fluidRow(
+    column(5,
+             checkboxGroupInput(
+          "people",
+          "Select People:",
+          choices = unique(wordCount$name),
+          selected = NULL,
+          inline = TRUE
+        ),
+           )
+  ),
+)
+)
+
+server <- shinyServer(function(input, output) {
+  select_df <- reactive({
+    #select date
+    parsed_wordCount <- wordCount[
+      wordCount$date %in% input$Dates[1]:input$Dates[2],]
+    #select weekday
+    parsed_wordCount <- parsed_wordCount[
+      weekdays(parsed_wordCount$date) %in% input$weekday,]
+    #select time 
+    # either correct bounds
+    #or equal -1, which makes sure every date is accounted for - not in use
+    parsed_wordCount <- parsed_wordCount[
+      (parsed_wordCount$hour >= input$Hours[1] & 
+        parsed_wordCount$hour <= input$Hours[2])
+      | parsed_wordCount$hour == input$alldays
+      ,]
+    if(!is.null(input$people)){
+      #select people
+      parsed_wordCount <- parsed_wordCount[
+        parsed_wordCount$name %in% input$people,]
+    }
+   
+    return(parsed_wordCount)
+  })
+  torender <- reactive({
+    textCount_shiny <- select_df() %>% 
+      dplyr::group_by(date,name) %>% 
+      dplyr::summarise(text_count = sum(text_count))
+    
+    
+    return(textCount_shiny)
+    })
+  
+  wordCount_render <- reactive({
+    wordCount_shiny <- select_df() %>% 
+      dplyr::group_by(date,name) %>% 
+      dplyr::summarise(word_count = sum(word_count))
+    
+    return(wordCount_shiny)
+    })
+ 
+  output$textCount_table = renderTable(
+    torender() %>%
+      dplyr::group_by(name) %>%
+      dplyr::summarise(avrg = mean(text_count),
+                median = median(text_count),
+                total = sum(text_count),
+                "stand dev" = sd(text_count),
+                "total days" = n())
+  )
+  
+  output$textCount_plot = renderPlot({
+    scatterRender(torender(),torender()$text_count)
+  })
+  output$textCount_boxplot = renderPlot({
+     boxplot(torender()$text_count ~ torender()$name) 
+  })
+  
+  output$wordCount_plot = renderPlot({
+    scatterRender(wordCount_render(), wordCount_render()$word_count)
+  })
+  output$wordCount_table = renderTable(
+    wordCount_render() %>%
+      group_by(name) %>%
+      summarise(avrg = mean(word_count),
+                median = median(word_count),
+                total = sum(word_count),
+                "stand dev" = sd(word_count))
+  )
+  output$wordCount_boxplot = renderPlot({
+     boxplot(wordCount_render()$word_count ~ wordCount_render()$name) 
+  })
+
+})
+shiny_app <- shinyApp(ui, server)
+```
+
+
+```{r}
+
+save(chat_bursts, chatdf, wordCount, shiny_app, clean_data, plot_types, file = "workdata.RData")
+```
+
+
+
