@@ -12,7 +12,7 @@ Over the last two decades, humankind has seen enormous advancements in technolog
 
 ## Challenges
 - How to organize the data in a meaningful way?
--     Texts are sent in bursts: One person sends a few texts in a row and another answers a few texts in a row. This type of double texting may complicate the analysis. I thought it was more meaningful to group them together into bursts. Instead of predicting the next text, I predict when the next burst is. As the target variable I use the initial time of the following burst.
+-       Texts are sent in bursts: One person sends a few texts in a row and another answers a few texts in a row. This type of double texting may complicate the analysis. I thought it was more meaningful to group them together into bursts. Instead of predicting the next text, I predict when the next burst is. As the target variable I use the initial time of the following burst.
 - How to extrapolate data from text?
 That’s where feature engineering and NLP came into play. The first thing I did was creating a minimum version of the model. Then I added day of the week, time of the day, whether it was morning, number of words on the current text and etc. Then I created an exponential moving average(EMA) of those values, including also an EMA of the previous target values. Finally, I used some sentiment analysis and TF-IDF on the actual textual data to further improve the model.
 - How to deal with privacy?
