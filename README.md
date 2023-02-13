@@ -11,10 +11,10 @@ Over the last two decades, humankind has seen enormous advancements in technolog
 - Create a deterministic script, that could apply to any conversation without change.
 
 ## Challenges
--          How to organize the data in a meaningful way?
+- How to organize the data in a meaningful way?
 Texts are sent in bursts: One person sends a few texts in a row and another answers a few texts in a row. This type of double texting may complicate the analysis. I thought it was more meaningful to group them together into bursts. Instead of predicting the next text, I predict when the next burst is. As the target variable I use the initial time of the following burst.
--          How to extrapolate data from text?
-       o   That’s where feature engineering and NLP came into play. The first thing I did was creating a minimum version of the model. Then I added day of the week, time of the day, whether it was morning, number of words on the current text and etc. Then I created an exponential moving average(EMA) of those values, including also an EMA of the previous target values. Finally, I used some sentiment analysis and TF-IDF on the actual textual data to further improve the model.
--          How to deal with privacy?
-       o   I was submitting my project to a professor and had to present it for the whole class. Naturally, privacy was a big issue. I created different files: one for data cleaning, one for model creations and one only for the presentation. This not only made my work more organized and easier to follow, but also allowed me to save the minimum amount of data necessary into an RData file for the final project.
+- How to extrapolate data from text?
+That’s where feature engineering and NLP came into play. The first thing I did was creating a minimum version of the model. Then I added day of the week, time of the day, whether it was morning, number of words on the current text and etc. Then I created an exponential moving average(EMA) of those values, including also an EMA of the previous target values. Finally, I used some sentiment analysis and TF-IDF on the actual textual data to further improve the model.
+- How to deal with privacy?
+I was submitting my project to a professor and had to present it for the whole class. Naturally, privacy was a big issue. I created different files: one for data cleaning, one for model creations and one only for the presentation. This not only made my work more organized and easier to follow, but also allowed me to save the minimum amount of data necessary into an RData file for the final project.
 
